@@ -118,6 +118,12 @@ class Planet():
                 (i.e. write it like def temp(r): ... and pass it as a 
                 parameter) to allow for a radially varying temperature.
 
+            max_steps (int): sets a maximum number of steps, to prevent
+                infinite loops
+            
+            stop_pressure (float): sets the pressure that serves as
+                the end condition for the loop.
+
         Returns:
             masses (list): the mass of each spherical shell.
 
