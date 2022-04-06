@@ -151,7 +151,7 @@ class Planet():
         step = 0
         material_idx = 0
         
-        # this loop integrates over a spherical shell of width rstep
+        # this loop integrates over a spherical shell of width dr
         # until the stop condition is met.
         # the condition to stop the loop as described in Seager is
         # when the pressure is 0 (2nd to last paragraph in S. 2)
