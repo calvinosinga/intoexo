@@ -55,11 +55,11 @@ class Planet():
             rho: density in kg / m^3
         """
         if material == 'H_2': # using ideal gas law
-            R = 8.314 # N m / k / mol
-            mol_weight = 2.016 # amu / mol
+            k_b = 1.38e-23 # J / K
+            mol_weight = 2.016 # amu
             amu_to_kg = 1.66e-27 # kg / amu
-            mol_weight *= amu_to_kg # now in kg / mol
-            return pressure * mol_weight/ R / temp
+            mol_weight *= amu_to_kg # now in kg
+            return pressure * mol_weight/ k_b / temp
         
         else:
             msg = '%s not an implemented material'%material
@@ -85,7 +85,7 @@ class Planet():
     
     def dmdr(self, r, rho):
         """
-        Calculate the mass within a spherical shell.
+        Calculate dm/dr.
 
         Args:
             r (float): radius in m
@@ -158,7 +158,7 @@ class Planet():
         while pressures[-1] > stop_pressure:
             if self.v:
                 print('starting step %d'%step)
-            elif step % 1000:
+            elif step % 1000 == 0:
                 print('starting step %d'%step)
             
             r_new = radii[-1] + dr
@@ -199,10 +199,61 @@ class Planet():
             masses.append(masses[-1] + dm)
             pressures.append(pressures[-1] + dp)
 
+            # often dp is so small that this basically becomes
+            # an infinite loop, so this is here to stop that
+            # from breaking
             if step > max_steps and not max_steps == -1:
+                print('warning: result not converged')
                 break
                 
             step += 1
 
-        return masses, radii, pressures
+        return np.array(masses), np.array(radii), np.array(pressures)
 
+    def integrateCP(self, central_pressures, dr, temp, 
+            max_steps = -1, stop_pressure = 0):
+        """
+        Given an array of central pressures, will calculate the final
+        mass and radius of the planet and return them for each of the
+        given central pressures.
+
+        The arguments are used as input into calculateMRP(...), see
+        that function for more details
+        Args:
+            central_pressures (np.array): 1D array containing the
+                central pressures (Pa). Used as input into
+                calculateMRP(...).
+            
+            #### BELOW SEE CALCULATEMRP ####
+            dr (float): 
+            temp (func): 
+            max_steps (int, optional): Defaults to -1.
+            stop_pressure (int, optional): Defaults to 0.
+
+        Returns:
+            surface_radii: (np.array) 1D array containing
+                the `surface` radius at which the pressure
+                reached the stop condition for each of the
+                given central pressures (m).
+            
+            total_masses: (np.array) 1D array that contains
+                the mass enclosed in the surface radius (kg).
+        """
+        
+        cps = central_pressures # for convenience
+        surface_radii = np.zeros_like(cps)
+        total_masses = np.zeros_like(cps)
+        
+        # for each central pressure, calculate the finall mass and
+        # radius for when the stop condition is met
+        for i in range(len(cps)):
+
+            # pressure value not used
+            m, r, _ = self.calculateMRP(cps[i], dr, temp, max_steps,
+                    stop_pressure)
+            
+            # save final radius and mass
+            surface_radii[i] = r[-1]
+            total_masses[i] = m[-1]
+        
+        return surface_radii, total_masses
