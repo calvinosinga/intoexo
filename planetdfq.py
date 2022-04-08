@@ -1,4 +1,5 @@
 import numpy as np
+from scipy.integrate import odeint
 
 class Planet():
     """
@@ -101,36 +102,12 @@ class Planet():
         # TODO: use to implement mass fraction later
         return 0
 
-    def calculateMRP(self, central_pressure, dr, temp, 
-            max_steps = -1, stop_pressure = 0):
-        """
-        Calculates the mass, radius, and pressure for each spherical
-        shell dr apart with the given temperature and central 
-        pressure.
-        Args:
-            central_pressure (float): given central pressure value
-                for P(r=0).
+    def getMaterial(self, r):
+        # TODO implement mass fraction
+        return self.materials[0]
 
-            dr (float): width of spherical shells.
-
-            temp (function, int, float): specify the temperature.
-                Can be given as a function that takes one input, radius,
-                (i.e. write it like def temp(r): ... and pass it as a 
-                parameter) to allow for a radially varying temperature.
-
-            max_steps (int): sets a maximum number of steps, to prevent
-                infinite loops
-            
-            stop_pressure (float): sets the pressure that serves as
-                the end condition for the loop.
-
-        Returns:
-            masses (list): the mass of each spherical shell.
-
-            radii (list): the radius of each spherical shell.
-
-            pressures (list): the pressure at each spherical shell. 
-        """
+    def calculateMP(self, central_pressure, central_mass,
+            rstart, rstop, temp, steps = int(1e6), stop_pressure = 0):
 
         # handle default behavior for temp is non-function
         if isinstance(temp, int) or isinstance(temp, float):
@@ -141,77 +118,54 @@ class Planet():
             temp_func = _oneVal
         else:
             temp_func = temp
-
-        # define initial values needed for the loop
-        radii = [dr]
-        pressures = [central_pressure]
-        # initial mass value is m(r_1) = m(dr) = 0 + dm
-        masses = [dr * self.dmdr(radii[0], self.eos(self.materials[0],
-                central_pressure, temp_func(radii[0])))]
-        step = 0
-        material_idx = 0
         
-        # this loop integrates over a spherical shell of width dr
-        # until the stop condition is met.
-        # the condition to stop the loop as described in Seager is
-        # when the pressure is 0 (2nd to last paragraph in S. 2)
-        while pressures[-1] > stop_pressure:
-            if self.v:
-                print('starting step %d'%step)
-            elif step % 1000 == 0:
-                print('starting step %d'%step)
+        def calcStep(pr_ma, r):
+            P, m = pr_ma
+            material = self.getMaterial(r)
+            rho = self.eos(material, P, temp_func(r))
+            dmdr = self.dmdr(r, rho)
+            dpdr = self.dpdr(r, m, rho)
+            return [dpdr, dmdr]
+
+        
+        idx = 0
+        pressure = np.zeros(steps)
+        mass = np.zeros(steps)
+        radii = np.zeros(steps)
+
+        pressure[0] = central_pressure
+        mass[0] = central_mass
+
+        while pressure[-1] > stop_pressure or idx == 0:
             
-            r_new = radii[-1] + dr
 
-            # TODO predict final mass and use it to determine the shell's
-            # mass fraction, used to determine if we need to switch materials
-            if self.shellMassFraction() > self.mfs[material_idx]:
-                material_idx += 1
-            
+            new_radii = np.geomspace(rstart, rstop, steps)
 
-            # calculate rho using the previous pressure value using the material's
-            # equation of state
-            rho = self.eos(self.materials[material_idx], 
-                    pressures[-1], temp_func(r_new))
-
-            if self.v:
-                print('\tdensity value: ' + str(rho))
-
-
-            # calculate the dm/dr, multiply by dr to get dm
-            dm = self.dmdr(r_new, rho) * dr
-            if self.v:
-                print('\tdm value calculated: ' + str(dm))
-                print('\tshell mass: ' + str(masses[-1] + dm))
-
-
-            # calculate dp/dr, multiply by dr to get dp
-            
-            dp = self.dpdr(r_new, masses[-1] + dm, rho) * dr
-
-            if self.v:
-                print('\tdp value calculated: ' + str(dp))
-                print('\tshell pressure: ' + str(pressures[-1] + dp))
-
-
-            # save the values to be returned to respective lists
-            radii.append(r_new)
-            masses.append(masses[-1] + dm)
-            pressures.append(pressures[-1] + dp)
-
-            # often dp is so small that this basically becomes
-            # an infinite loop, so this is here to stop that
-            # from breaking
-            if step > max_steps and not max_steps == -1:
-                print('warning: result not converged')
-                break
+            if not idx == 0:
+                pressure = np.pad(pressure, ((0, steps)), constant_values = (0, 0))
+                mass = np.pad(mass, ((0, steps)), constant_values = (0, 0))
+                radii = np.pad(radii, ((0, steps)), constant_values = (0, 0))
                 
-            step += 1
+            out = odeint(calcStep, [pressure[idx], mass[idx]], new_radii)
+            
+            
+            pressure[idx:] = out[:, 0]
+            mass[idx:] = out[:, 1]
+            radii[idx:] = new_radii[:]
 
-        return np.array(masses), np.array(radii), np.array(pressures)
+            temp = rstop
+            rstop = (np.log10(rstop) - np.log10(rstart)) * steps
+            rstart = temp
 
-    def integrateCP(self, central_pressures, dr, temp, 
-            max_steps = -1, stop_pressure = 0):
+            idx += steps
+
+        mass = np.trim_zeros(mass, 'b')
+        pressure = np.trim_zeros(pressure, 'b')
+        radii = radii[:pressure.shape[0]]
+        return radii, mass, pressure
+
+    def integrateCP(self, central_pressures, central_mass,
+            rstart, rstop, temp, stop_pressure = 0):
         """
         Given an array of central pressures, will calculate the final
         mass and radius of the planet and return them for each of the
@@ -249,11 +203,116 @@ class Planet():
         for i in range(len(cps)):
 
             # pressure value not used
-            m, r, _ = self.calculateMRP(cps[i], dr, temp, max_steps,
-                    stop_pressure)
+            r, m, _ = self.calculateMP(cps[i], central_mass, rstart, rstop, temp,
+                    stop_pressure = stop_pressure)
             
             # save final radius and mass
             surface_radii[i] = r[-1]
             total_masses[i] = m[-1]
         
         return surface_radii, total_masses
+    
+    def calculateMPList(self, central_pressure, radii, temp, 
+            max_steps = -1, stop_pressure = 0):
+        """
+        Calculates the mass, radius, and pressure for each spherical
+        shell dr apart with the given temperature and central 
+        pressure.
+
+        Args:
+            central_pressure (float): given central pressure value
+                for P(r=0).
+
+            radii (array): values to evaluate pressure and mass at.
+
+            temp (function, int, float): specify the temperature.
+                Can be given as a function that takes one input, radius,
+                (i.e. write it like def temp(r): ... and pass it as a 
+                parameter) to allow for a radially varying temperature.
+
+            max_steps (int): sets a maximum number of steps, to prevent
+                infinite loops
+            
+            stop_pressure (float): sets the pressure that serves as
+                the end condition for the loop.
+
+        Returns:
+            masses (list): the mass of each spherical shell.
+
+            pressures (list): the pressure at each spherical shell. 
+        """
+
+        # handle default behavior for temp is non-function
+        if isinstance(temp, int) or isinstance(temp, float):
+
+            def _oneVal(r):
+                return temp
+            
+            temp_func = _oneVal
+        else:
+            temp_func = temp
+
+        pressures = [central_pressure]
+        masses = [0]
+        radii = np.insert(radii, 0, 0)
+        step = 1
+        material_idx = 0
+        
+        # this loop integrates over a spherical shell of width dr
+        # until the stop condition is met.
+        # the condition to stop the loop as described in Seager is
+        # when the pressure is 0 (2nd to last paragraph in S. 2)
+        while pressures[-1] > stop_pressure and step < len(radii):
+            if self.v:
+                print('starting step %d'%step)
+            elif step % 1000 == 0:
+                print('starting step %d'%step)
+            
+
+            # TODO predict final mass and use it to determine the shell's
+            # mass fraction, used to determine if we need to switch materials
+            if self.shellMassFraction() > self.mfs[material_idx]:
+                material_idx += 1
+            shell_material = self.materials[material_idx]
+            
+            dr = radii[step] - radii[step - 1]
+            
+            # calculate rho using the previous pressure value using the material's
+            # equation of state
+            rho = self.eos(shell_material, pressures[-1], 
+                    temp_func(radii[step]))
+
+            if self.v:
+                print('\tdensity value: ' + str(rho))
+
+            # calculate the dm/dr, multiply by dr to get dm
+            dm = self.dmdr(radii[step], rho) * dr
+
+            if self.v:
+                print('\tdm value calculated: ' + str(dm))
+                print('\tshell mass: ' + str(masses[-1] + dm))
+
+
+            # calculate dp/dr, multiply by dr to get dp
+            
+            dp = self.dpdr(radii[step], masses[-1], rho) * dr
+
+            if self.v:
+                print('\tdp value calculated: ' + str(dp))
+                print('\tshell pressure: ' + str(pressures[-1] + dp))
+
+
+            # save the values to be returned to respective lists
+            masses.append(masses[-1] + dm)
+            pressures.append(pressures[-1] + dp)
+
+            # often dp is so small that this basically becomes
+            # an infinite loop, so this is here to stop that
+            # from breaking
+            if step > max_steps and not max_steps == -1:
+                print('warning: result not converged')
+                break
+                
+            step += 1
+
+        return np.array(masses), np.array(pressures)
