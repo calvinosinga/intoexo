@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.integrate import odeint
+from scipy.optimize import fsolve
 
 class Planet():
     """
@@ -28,8 +29,10 @@ class Planet():
                 When testing, would be good to set to 1 (True).
                 Defaults to 0.
         """
-
-        self.materials = materials
+        if isinstance(materials, str):
+            self.materials = [materials]
+        else:
+            self.materials = materials
         self.mfs = mass_fractions
         self.v = verbose
         return
@@ -55,12 +58,32 @@ class Planet():
         Returns:
             rho: density in kg / m^3
         """
-        if material == 'H_2': # using ideal gas law
+
+        if material == 'H_2':
             k_b = 1.38e-23 # J / K
             mol_weight = 2.016 # amu
             amu_to_kg = 1.66e-27 # kg / amu
             mol_weight *= amu_to_kg # now in kg
             return pressure * mol_weight/ k_b / temp
+
+            
+        elif material == 'H2O':
+            rho0 = 1460
+            c = 0.00311
+            n = 0.513
+            return rho0 + c*pressure**n
+            
+        elif material == 'MgSiO3': # perovskite
+            rho0 = 4100
+            c = 0.00161
+            n = 0.541
+            return rho0 + c*pressure**n
+        
+        elif material == 'Fe': # alpha
+            rho0 = 8300
+            c = 0.00349
+            n = 0.528
+            return rho0 + c*pressure**n
         
         else:
             msg = '%s not an implemented material'%material
@@ -107,8 +130,37 @@ class Planet():
         return self.materials[0]
 
     def calculateMP(self, central_pressure, central_mass,
-            rstart, rstop, temp, steps = int(1e6), stop_pressure = 0):
+            rstart, rstop, temp, steps = int(1e6), stop_pressure = 0,
+            step_type = 'log'):
+        """ Calculates the mass and pressure as a function of radius.
 
+        Args:
+            central_pressure (float): the pressure at the center of the
+                planet.
+            central_mass (float): the mass at the center of the planet.
+                Should typically be 0.
+            rstart (float): Where to start the calculation from.
+            rstop (float): a guess for where the radius will end.
+                This will not determine when the computation ends,
+                but rather serves as a way to take efficient dr steps.
+            temp (func, float): If a radially varying temperature, pass in
+                a function that only takes r as an input. Otherwise, can
+                give a float and then a function will be created.
+            steps (int, optional): max number of steps to take. Specify
+                if likely that the integration will take too long.
+                Defaults to int(1e6).
+            stop_pressure (float, optional): The condition to stop the
+                loop. When P reaches this value, computation stops.
+                Defaults to 0.
+
+        Returns:
+            radii (array): the radii for the mass and pressure
+                calculations.
+            mass (array): the masses within the corresponding 
+                radii.
+            pressure (array): the pressures at the corresponding
+                radii. 
+        """
         # handle default behavior for temp is non-function
         if isinstance(temp, int) or isinstance(temp, float):
 
@@ -119,6 +171,7 @@ class Planet():
         else:
             temp_func = temp
         
+        # function to handle ode integration
         def calcStep(pr_ma, r):
             P, m = pr_ma
             material = self.getMaterial(r)
@@ -129,43 +182,71 @@ class Planet():
 
         
         idx = 0
-        pressure = np.zeros(steps)
-        mass = np.zeros(steps)
-        radii = np.zeros(steps)
+        pressure = np.zeros(steps - 1)
+        mass = np.zeros(steps - 1)
+        radii = np.zeros(steps - 1)
 
-        pressure[0] = central_pressure
-        mass[0] = central_mass
+        # numpy arrays run much, much faster than lists, 
+        # but we don't know how long we need to loop before
+        # the pressure condition is reached. So we create a numpy
+        # array of arbitrary length and keep padding it until
+        # finally the stopping pressure is reached.
 
         while pressure[-1] > stop_pressure or idx == 0:
             
-
-            new_radii = np.geomspace(rstart, rstop, steps)
-
+            # the radii for this iteration
+            if step_type == 'log':
+                new_radii = np.geomspace(rstart, rstop, steps)
+            elif step_type == 'lin':
+                new_radii = np.linspace(rstart, rstop, steps)
+            # if not the first iteration, need to pad RMP arrays
+            # to store the new values
             if not idx == 0:
-                pressure = np.pad(pressure, ((0, steps)), constant_values = (0, 0))
-                mass = np.pad(mass, ((0, steps)), constant_values = (0, 0))
-                radii = np.pad(radii, ((0, steps)), constant_values = (0, 0))
-                
-            out = odeint(calcStep, [pressure[idx], mass[idx]], new_radii)
+                pressure = np.pad(pressure, ((0, steps - 1)), constant_values = (0, 0))
+                mass = np.pad(mass, ((0, steps - 1)), constant_values = (0, 0))
+                radii = np.pad(radii, ((0, steps - 1)), constant_values = (0, 0))
+            else:
+                p0 = central_pressure
+                m0 = central_mass
+
+            out = odeint(calcStep, [p0, m0], new_radii)
+            # since the last value is saved as initial value of
+            # next iteration, exclude it.
+            pressure[idx:] = out[:-1, 0]
+            mass[idx:] = out[:-1, 1]
+            radii[idx:] = new_radii[:-1]
+
             
-            
-            pressure[idx:] = out[:, 0]
-            mass[idx:] = out[:, 1]
-            radii[idx:] = new_radii[:]
+            # get new r-range the same difference in logspace
+            if step_type == 'log':
+                dif = np.log10(new_radii[-1] / new_radii[0])
+                tmp = rstop
+                rstop = rstop * 10**(dif)
+                rstart = tmp
+            elif step_type == 'lin':
+                tmp = rstop
+                rstop *= 2
+                rstart = tmp
+            # set new initial params
+            p0 = out[-1, 0]
+            m0 = out[-1, 1]
 
-            temp = rstop
-            rstop = (np.log10(rstop) - np.log10(rstart)) * steps
-            rstart = temp
+            idx += steps - 1
 
-            idx += steps
+        
+        # there's a decent likelihood that we overshot the
+        # stopping pressure, this trims excess values...
+        stopidx = (np.abs(pressure - stop_pressure)).argmin()
 
-        mass = np.trim_zeros(mass, 'b')
-        pressure = np.trim_zeros(pressure, 'b')
-        radii = radii[:pressure.shape[0]]
+        radii = radii[:stopidx]
+        mass = mass[:stopidx]
+        pressure = pressure[:stopidx]
+
         return radii, mass, pressure
 
     def integrateCP(self, central_pressures, central_mass,
-            rstart, rstop, temp, stop_pressure = 0):
+            rstart, rstop, temp, steps = int(1e6), 
+            stop_pressure = 0, step_type = 'log'):
         """
         Given an array of central pressures, will calculate the final
         mass and radius of the planet and return them for each of the
@@ -179,9 +260,11 @@ class Planet():
                 calculateMRP(...).
             
             #### BELOW SEE CALCULATEMRP ####
-            dr (float): 
+            central_mass (float):
+            rstart (float):
+            rstop (float): 
             temp (func): 
-            max_steps (int, optional): Defaults to -1.
+            steps (int, optional):
             stop_pressure (int, optional): Defaults to 0.
 
         Returns:
@@ -197,14 +280,16 @@ class Planet():
         cps = central_pressures # for convenience
         surface_radii = np.zeros_like(cps)
         total_masses = np.zeros_like(cps)
-        
-        # for each central pressure, calculate the finall mass and
+        num = len(cps)
+        # for each central pressure, calculate the final mass and
         # radius for when the stop condition is met
         for i in range(len(cps)):
+            if i % int(num / 5) == 0:
+                print('finished 1/5 of central pressures...')
 
             # pressure value not used
             r, m, _ = self.calculateMP(cps[i], central_mass, rstart, rstop, temp,
-                    stop_pressure = stop_pressure)
+                    steps, stop_pressure, step_type)
             
             # save final radius and mass
             surface_radii[i] = r[-1]
@@ -217,7 +302,7 @@ class Planet():
         """
         Calculates the mass, radius, and pressure for each spherical
         shell dr apart with the given temperature and central 
-        pressure.
+        pressure.  *OLD VERSION*
 
         Args:
             central_pressure (float): given central pressure value
